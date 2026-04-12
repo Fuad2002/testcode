@@ -1,0 +1,40 @@
+int enA = 9;
+int in1 = 22;
+int in2 = 23;
+int in3 = 24;
+int in4 = 25;
+int enB = 7;
+String input = "";
+int speedValue = 0;
+
+void setup() {
+  pinMode(enA, OUTPUT);
+  pinMode(in1, OUTPUT);
+  pinMode(in2, OUTPUT);
+   pinMode(enB, OUTPUT);
+  pinMode(in3, OUTPUT);
+  pinMode(in4, OUTPUT);
+
+  Serial.begin(9600);
+
+  digitalWrite(in1, HIGH);
+  digitalWrite(in2, LOW);
+   digitalWrite(in3, HIGH);
+  digitalWrite(in4, LOW);
+
+  Serial.println("Enter speed (0-255):");
+}
+
+void loop() {
+  if (Serial.available()) {
+    input = Serial.readStringUntil('\n'); // read full line
+    speedValue = input.toInt();
+
+    speedValue = constrain(speedValue, 0, 255);
+    analogWrite(enA, speedValue);
+    analogWrite(enB, speedValue);
+
+    Serial.print("Speed set to: ");
+    Serial.println(speedValue);
+  }
+}
