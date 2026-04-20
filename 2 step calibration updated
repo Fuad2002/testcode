@@ -1,0 +1,97 @@
+const int numSensors = 10;
+int sensorPins[numSensors] = {A6, A7, A8, A9, A10, A11, A12, A13, A14, A15};
+
+int minVal[numSensors], maxVal[numSensors];
+int minVal2[numSensors], maxVal2[numSensors];
+int threshold[numSensors];
+
+bool calibrated = false;
+int pass = 1;
+
+void setup() {
+  Serial.begin(9600);
+
+  for (int i = 0; i < numSensors; i++) {
+    minVal[i] = 1023;
+    maxVal[i] = 0;
+    minVal2[i] = 1023;
+    maxVal2[i] = 0;
+  }
+
+  Serial.println("Calibration Pass 1: WHITE -> BLACK -> WHITE");
+}
+
+void loop() {
+
+  if (!calibrated) {
+
+    // -------- PASS 1 --------
+    if (pass == 1) {
+      for (int i = 0; i < numSensors; i++) {
+        int val = analogRead(sensorPins[i]);
+
+        if (val < minVal[i]) minVal[i] = val;
+        if (val > maxVal[i]) maxVal[i] = val;
+      }
+
+      static unsigned long t1 = millis();
+      if (millis() - t1 > 5000) {
+        Serial.println("Pass 1 done!");
+        Serial.println("Calibration Pass 2: repeat movement");
+
+        pass = 2;
+        delay(2000);
+      }
+
+      return;
+    }
+
+    // -------- PASS 2 --------
+    if (pass == 2) {
+      for (int i = 0; i < numSensors; i++) {
+        int val = analogRead(sensorPins[i]);
+
+        if (val < minVal2[i]) minVal2[i] = val;
+        if (val > maxVal2[i]) maxVal2[i] = val;
+      }
+
+      static unsigned long t2 = millis();
+      if (millis() - t2 > 5000) {
+        Serial.println("Pass 2 done!");
+        Serial.println("Computing final thresholds...\n");
+
+        // -------- MERGE RESULTS --------
+        for (int i = 0; i < numSensors; i++) {
+          int finalMin = min(minVal[i], minVal2[i]);
+          int finalMax = max(maxVal[i], maxVal2[i]);
+
+          threshold[i] = (finalMin + finalMax) / 2;
+
+          Serial.print("Sensor ");
+          Serial.print(i);
+          Serial.print(" Min: "); Serial.print(finalMin);
+          Serial.print(" Max: "); Serial.print(finalMax);
+          Serial.print(" Threshold: "); Serial.println(threshold[i]);
+        }
+
+        calibrated = true;
+        delay(2000);
+      }
+
+      return;
+    }
+  }
+
+  // -------- NORMAL OPERATION --------
+  for (int i = 0; i < numSensors; i++) {
+    int val = analogRead(sensorPins[i]);
+
+    int output = (val > threshold[i]) ? 1 : 0;
+
+    Serial.print(output);
+    Serial.print(" ");
+  }
+
+  Serial.println();
+  delay(100);
+}
