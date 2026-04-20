@@ -2,113 +2,106 @@ import sys
 import serial
 from PyQt5 import QtWidgets, QtCore
 
-PORT = 'COM17'   # 🔴 CHANGE THIS
+PORT = 'COM17'
 BAUD = 9600
 NUM_SENSORS = 10
 
+
+# -------- SERIAL THREAD --------
+class SerialThread(QtCore.QThread):
+    data_received = QtCore.pyqtSignal(list)
+    text_received = QtCore.pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.ser = serial.Serial(PORT, BAUD, timeout=1)
+        self.running = True
+
+    def run(self):
+        while self.running:
+            try:
+                line = self.ser.readline().decode().strip()
+
+                if not line:
+                    continue
+
+                # Calibration / text
+                if not line[0].isdigit():
+                    self.text_received.emit(line)
+                    continue
+
+                # Sensor data
+                values = line.split()
+
+                if len(values) == NUM_SENSORS:
+                    self.data_received.emit(values)
+
+            except:
+                pass
+
+    def stop(self):
+        self.running = False
+        self.ser.close()
+
+
+# -------- MAIN UI --------
 class SensorUI(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
 
-        self.ser = serial.Serial(PORT, BAUD, timeout=1)
-
-        self.setWindowTitle("Arduino Sensor Dashboard")
-        self.setGeometry(200, 200, 900, 400)
+        self.setWindowTitle("Fast Arduino Dashboard")
+        self.setGeometry(200, 200, 900, 350)
 
         self.layout = QtWidgets.QVBoxLayout()
 
-        # Status label
-        self.status_label = QtWidgets.QLabel("Waiting...")
-        self.status_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.status_label.setStyleSheet("font-size: 16px;")
-        self.layout.addWidget(self.status_label)
+        self.status = QtWidgets.QLabel("Starting...")
+        self.layout.addWidget(self.status)
 
         # Circles
         self.circle_layout = QtWidgets.QHBoxLayout()
         self.circles = []
 
-        for i in range(NUM_SENSORS):
-            circle = QtWidgets.QLabel()
-            circle.setFixedSize(50, 50)
-            circle.setStyleSheet(self.get_style("yellow"))
-            self.circles.append(circle)
-            self.circle_layout.addWidget(circle)
+        for _ in range(NUM_SENSORS):
+            lbl = QtWidgets.QLabel()
+            lbl.setFixedSize(40, 40)
+            lbl.setStyleSheet(self.style("yellow"))
+            self.circles.append(lbl)
+            self.circle_layout.addWidget(lbl)
 
         self.layout.addLayout(self.circle_layout)
 
-        # Threshold labels
-        self.threshold_layout = QtWidgets.QHBoxLayout()
-        self.threshold_labels = []
-
-        for i in range(NUM_SENSORS):
-            lbl = QtWidgets.QLabel(f"T{i}: --")
-            lbl.setAlignment(QtCore.Qt.AlignCenter)
-            self.threshold_labels.append(lbl)
-            self.threshold_layout.addWidget(lbl)
-
-        self.layout.addLayout(self.threshold_layout)
-
-        # Button
-        self.button = QtWidgets.QPushButton("Recalibrate")
-        self.button.clicked.connect(self.recalibrate)
-        self.layout.addWidget(self.button)
-
         self.setLayout(self.layout)
 
-        # Timer
-        self.timer = QtCore.QTimer()
-        self.timer.timeout.connect(self.update_data)
-        self.timer.start(100)
+        # Thread
+        self.thread = SerialThread()
+        self.thread.data_received.connect(self.update_sensors)
+        self.thread.text_received.connect(self.update_text)
+        self.thread.start()
 
-    def get_style(self, color):
+    def style(self, color):
         return f"""
         background-color: {color};
-        border-radius: 25px;
-        border: 2px solid black;
+        border-radius: 20px;
+        border: 1px solid black;
         """
 
-    def recalibrate(self):
-        try:
-            self.ser.write(b'r')  # send command to Arduino
-            self.status_label.setText("Recalibration requested...")
-        except Exception as e:
-            print("Error:", e)
+    def update_text(self, text):
+        self.status.setText(text)
 
-    def update_data(self):
-        try:
-            if self.ser.in_waiting:
-                line = self.ser.readline().decode().strip()
+    def update_sensors(self, values):
+        self.status.setText("Running...")
 
-                # ---- THRESHOLD PARSING ----
-                if line.startswith("Sensor"):
-                    # Example:
-                    # Sensor 0 Min: 100 Max: 900 Threshold: 500
-                    parts = line.split()
-                    idx = int(parts[1])
-                    thresh = parts[-1]
+        for i, v in enumerate(values):
+            if v == '1':
+                self.circles[i].setStyleSheet(self.style("blue"))
+            else:
+                self.circles[i].setStyleSheet(self.style("yellow"))
 
-                    self.threshold_labels[idx].setText(f"T{idx}: {thresh}")
-                    return
-
-                # ---- STATUS TEXT ----
-                if not line or not line[0].isdigit():
-                    self.status_label.setText(line)
-                    return
-
-                # ---- SENSOR VALUES ----
-                values = line.split()
-
-                if len(values) == NUM_SENSORS:
-                    self.status_label.setText("Running...")
-
-                    for i, val in enumerate(values):
-                        if val == '1':
-                            self.circles[i].setStyleSheet(self.get_style("blue"))
-                        else:
-                            self.circles[i].setStyleSheet(self.get_style("yellow"))
-
-        except Exception as e:
-            print("Error:", e)
+    def closeEvent(self, event):
+        self.thread.stop()
+        self.thread.quit()
+        self.thread.wait()
+        event.accept()
 
 
 if __name__ == "__main__":
