@@ -1,0 +1,72 @@
+const int numSensors = 10;
+int sensorPins[numSensors] = {A6, A7, A8, A9, A10, A11, A12, A13, A14, A15};
+
+int minVal[numSensors];
+int maxVal[numSensors];
+int threshold[numSensors];
+
+bool calibrated = false;
+
+void setup() {
+  Serial.begin(9600);
+
+  // Initialize min/max
+  for (int i = 0; i < numSensors; i++) {
+    minVal[i] = 1023;
+    maxVal[i] = 0;
+  }
+
+  Serial.println("Calibration started: Move sensors over WHITE -> BLACK -> WHITE");
+}
+
+void loop() {
+
+  // -------- CALIBRATION PHASE --------
+  if (!calibrated) {
+    for (int i = 0; i < numSensors; i++) {
+      int val = analogRead(sensorPins[i]);
+
+      if (val < minVal[i]) minVal[i] = val;
+      if (val > maxVal[i]) maxVal[i] = val;
+    }
+
+    // Run calibration for ~5 seconds
+    static unsigned long startTime = millis();
+    if (millis() - startTime > 5000) {
+      Serial.println("Calibration done!");
+
+      for (int i = 0; i < numSensors; i++) {
+        threshold[i] = (minVal[i] + maxVal[i]) / 2;
+
+        Serial.print("Sensor ");
+        Serial.print(i);
+        Serial.print(" Min: "); Serial.print(minVal[i]);
+        Serial.print(" Max: "); Serial.print(maxVal[i]);
+        Serial.print(" Threshold: "); Serial.println(threshold[i]);
+      }
+
+      calibrated = true;
+      delay(2000);
+    }
+
+    return; // stay in calibration until done
+  }
+
+  // -------- NORMAL OPERATION --------
+  for (int i = 0; i < numSensors; i++) {
+    int val = analogRead(sensorPins[i]);
+
+    int output;
+    if (val > threshold[i]) {
+      output = 1; // BLACK
+    } else {
+      output = 0; // WHITE
+    }
+
+    Serial.print(output);
+    Serial.print(" ");
+  }
+
+  Serial.println();
+  delay(100);
+}
