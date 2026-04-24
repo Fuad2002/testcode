@@ -1,0 +1,188 @@
+
+// ================= SENSOR SETUP =================
+const int numSensors = 10;
+int sensorPins[numSensors] = {A6, A7, A8, A9, A10, A11, A12, A13, A14, A15};
+
+int minVal[numSensors], maxVal[numSensors], threshold[numSensors];
+
+// ================= BUZZER =================
+#define BUZZER 49
+
+// ================= MOTOR PINS =================
+#define ENA 5
+#define IN1 6
+#define IN2 7
+
+#define ENB 9
+#define IN3 10
+#define IN4 11
+
+// ================= CONTROL =================
+int baseSpeed = 75;
+
+// PID values (tune these)
+float Kp = 22;
+float Ki = 0.0;
+float Kd = 35;
+
+float lastError = 0;
+float integral = 0;
+
+// sensor weights
+int weights[10] = {-4,-3,-2,-1,0,0,1,2,3,4};
+
+// ================= BUZZER =================
+void beep3() {
+  for (int i = 0; i < 3; i++) {
+    tone(BUZZER, 1500, 120);
+    delay(220);
+  }
+}
+
+// ================= MOTOR CONTROL =================
+void setMotor(int left, int right) {
+
+  if (left >= 0) {
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, LOW);
+  } else {
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, HIGH);
+    left = -left;
+  }
+
+  if (right >= 0) {
+    digitalWrite(IN3, HIGH);
+    digitalWrite(IN4, LOW);
+  } else {
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, HIGH);
+    right = -right;
+  }
+
+  analogWrite(ENA, constrain(left, 0, 255));
+  analogWrite(ENB, constrain(right, 0, 255));
+}
+
+// ================= SETUP =================
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(BUZZER, OUTPUT);
+
+  pinMode(ENA, OUTPUT);
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+
+  pinMode(ENB, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+
+  for (int i = 0; i < numSensors; i++) {
+    minVal[i] = 1023;
+    maxVal[i] = 0;
+  }
+
+  // ================= CALIBRATION =================
+
+  beep3();
+  Serial.println("WHITE CALIBRATION");
+
+  delay(3000);
+
+  unsigned long t1 = millis();
+  while (millis() - t1 < 3000) {
+    for (int i = 0; i < numSensors; i++) {
+      int v = analogRead(sensorPins[i]);
+      if (v < minVal[i]) minVal[i] = v;
+    }
+  }
+
+  beep3();
+  Serial.println("BLACK CALIBRATION");
+
+  unsigned long t2 = millis();
+  while (millis() - t2 < 5000) {
+    for (int i = 0; i < numSensors; i++) {
+      int v = analogRead(sensorPins[i]);
+      if (v > maxVal[i]) maxVal[i] = v;
+    }
+  }
+
+  beep3();
+  Serial.println("CALIBRATION DONE");
+
+  for (int i = 0; i < numSensors; i++) {
+    threshold[i] = (minVal[i] + maxVal[i]) / 2;
+
+    Serial.print("S");
+    Serial.print(i);
+    Serial.print(" T=");
+    Serial.println(threshold[i]);
+  }
+}
+
+// ================= LOOP =================
+void loop() {
+
+  int s[10];
+  int active = 0;
+  int posSum = 0;
+
+  // read sensors
+  for (int i = 0; i < numSensors; i++) {
+    int val = analogRead(sensorPins[i]);
+    s[i] = (val > threshold[i]) ? 1 : 0;
+
+    if (s[i]) {
+      active++;
+      posSum += weights[i];
+    }
+  }
+
+  // ================= LINE LOST FIX =================
+  if (active == 0) {
+    // DO NOT STOP suddenly — keep last direction
+    int correction = (lastError > 0) ? 60 : -60;
+
+    setMotor(baseSpeed - correction, baseSpeed + correction);
+    Serial.println("SEARCHING LINE");
+    return;
+  }
+
+  // ================= CENTER STRONG HOLD =================
+  int center = s[3] + s[4] + s[5] + s[6];
+  int sides  = active - center;
+
+  float error = (float)posSum / active;
+
+  // if very centered → go straight
+  if (center >= sides && center > 0) {
+    setMotor(baseSpeed, baseSpeed);
+    Serial.println("STRAIGHT");
+    lastError = 0;
+    return;
+  }
+
+  // ================= PID =================
+  integral += error;
+  float derivative = error - lastError;
+
+  float correction = (Kp * error) + (Ki * integral) + (Kd * derivative);
+
+  lastError = error;
+
+  int leftSpeed  = baseSpeed - correction;
+  int rightSpeed = baseSpeed + correction;
+
+  setMotor(leftSpeed, rightSpeed);
+
+  // ================= DEBUG =================
+  if (error > 2) Serial.println("MORE RIGHT");
+  else if (error > 0.5) Serial.println("SLIGHT RIGHT");
+  else if (error < -2) Serial.println("MORE LEFT");
+  else if (error < -0.5) Serial.println("SLIGHT LEFT");
+  else Serial.println("CENTER");
+
+  delay(10);
+}
