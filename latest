@@ -1,0 +1,282 @@
+#include <Wire.h>
+
+#define MPU_ADDR 0x68
+// ================= SENSOR SETUP =================
+const int numSensors = 10;
+int sensorPins[numSensors] = {A6, A7, A8, A9, A10, A11, A12, A13, A14, A15};
+
+int minVal[numSensors], maxVal[numSensors], threshold[numSensors];
+
+// ================= BUZZER =================
+#define BUZZER 49
+
+// ================= MOTOR PINS =================
+#define ENA 5
+#define IN1 6
+#define IN2 7
+
+#define ENB 9
+#define IN3 10
+#define IN4 11
+
+// ================= CONTROL =================
+int baseSpeed = 80;
+int maxSpeed  = 210;
+
+float currentSpeed = 75;
+float targetSpeed  = 75;
+
+// -------- ANGLE --------
+float flatAngle = 0;
+float bridgeAngle = 0;
+
+// smoothing
+float smoothedPitch = 0;
+float alpha = 0.08;
+
+// PID values (tune these)
+float Kp = 20;
+float Ki = 0.0;
+float Kd = 20;
+
+float lastError = 0;
+float integral = 0;
+
+// sensor weights
+int weights[10] = {-5,-4,-2,-1,0,0,1,2,4,5};
+
+// ================= BUZZER =================
+void beep3() {
+  for (int i = 0; i < 3; i++) {
+    tone(BUZZER, 1500, 120);
+    delay(220);
+  }
+}
+// -------- READ ACCEL --------
+void readAccel(int16_t &ax, int16_t &ay, int16_t &az) {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x3B);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU_ADDR, 6, true);
+
+  ax = Wire.read() << 8 | Wire.read();
+  ay = Wire.read() << 8 | Wire.read();
+  az = Wire.read() << 8 | Wire.read();
+}
+// -------- GET PITCH --------
+float getPitch() {
+  int16_t ax, ay, az;
+  readAccel(ax, ay, az);
+
+  return atan2((float)ax, sqrt((float)ay * ay + (float)az * az)) * 180 / PI;
+}
+// ================= MOTOR CONTROL =================
+void setMotor(int left, int right) {
+
+  if (left >= 0) {
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, LOW);
+  } else {
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, HIGH);
+    left = -left;
+  }
+
+  if (right >= 0) {
+    digitalWrite(IN3, HIGH);
+    digitalWrite(IN4, LOW);
+  } else {
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, HIGH);
+    right = -right;
+  }
+
+  analogWrite(ENA, constrain(left, 0, 255));
+  analogWrite(ENB, constrain(right, 0, 255));
+}
+
+// ================= SETUP =================
+void setup() {
+  Serial.begin(9600);
+   Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x6B);
+  Wire.write(0);
+  Wire.endTransmission(true);
+  pinMode(BUZZER, OUTPUT);
+
+  pinMode(ENA, OUTPUT);
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+
+  pinMode(ENB, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+
+  for (int i = 0; i < numSensors; i++) {
+    minVal[i] = 1023;
+    maxVal[i] = 0;
+  }
+
+  // ================= CALIBRATION =================
+
+  beep3();
+  Serial.println("WHITE CALIBRATION");
+
+  delay(3000);
+
+  unsigned long t1 = millis();
+  while (millis() - t1 < 3000) {
+    for (int i = 0; i < numSensors; i++) {
+      int v = analogRead(sensorPins[i]);
+      if (v < minVal[i]) minVal[i] = v;
+    }
+  }
+
+  beep3();
+  Serial.println("BLACK CALIBRATION");
+
+  unsigned long t2 = millis();
+  while (millis() - t2 < 5000) {
+    for (int i = 0; i < numSensors; i++) {
+      int v = analogRead(sensorPins[i]);
+      if (v > maxVal[i]) maxVal[i] = v;
+    }
+  }
+
+  beep3();
+  Serial.println("CALIBRATION DONE");
+
+  for (int i = 0; i < numSensors; i++) {
+    threshold[i] = (minVal[i] + maxVal[i]) / 2;
+
+    Serial.print("S");
+    Serial.print(i);
+    Serial.print(" T=");
+    Serial.println(threshold[i]);
+  }
+   beep3();
+   Serial.println("KEEP ROBOT FLAT...");
+  delay(3000);
+
+  float sum = 0;
+  for (int i = 0; i < 100; i++) {
+    sum += getPitch();
+    delay(10);
+  }
+  flatAngle = sum / 100;
+
+  Serial.print("Flat Angle: ");
+  Serial.println(flatAngle);
+
+  // ===== BRIDGE CALIBRATION =====
+  Serial.println("TILT ROBOT TO BRIDGE...");
+  beep3();
+  delay(3000);
+
+  sum = 0;
+  for (int i = 0; i < 100; i++) {
+    sum += getPitch();
+    delay(10);
+  }
+  bridgeAngle = sum / 100;
+
+  Serial.print("Bridge Angle: ");
+  Serial.println(bridgeAngle);
+
+  Serial.println("STARTING...");
+  delay(2000);
+}
+
+// ================= LOOP =================
+void loop() {
+   float pitch = getPitch();
+
+   // -------- ANGLE FILTER --------
+  smoothedPitch = alpha * pitch + (1 - alpha) * smoothedPitch;
+
+  float absPitch  = abs(smoothedPitch);
+  float absFlat   = abs(flatAngle);
+  float absBridge = abs(bridgeAngle);
+
+  // -------- MAP ANGLE → TARGET SPEED --------
+  float ratio = (absPitch - absFlat) / (absBridge - absFlat);
+
+  if (ratio < 0) ratio = 0;
+  if (ratio > 1) ratio = 1;
+
+  targetSpeed = baseSpeed + ratio * (maxSpeed - baseSpeed);
+
+  // -------- ADAPTIVE RAMP (FAST + SMOOTH) --------
+  float diff = targetSpeed - currentSpeed;
+
+  float step = abs(diff) * 0.650;   // responsiveness
+
+  if (step < 1) step = 1;
+  if (step > 10) step = 10;
+
+  if (diff > 0) currentSpeed += step;
+  else if (diff < 0) currentSpeed -= step;
+
+  int baseSpeed = constrain((int)currentSpeed, 0, 255);
+
+  int s[10];
+  int active = 0;
+  int posSum = 0;
+
+  // read sensors
+  for (int i = 0; i < numSensors; i++) {
+    int val = analogRead(sensorPins[i]);
+    s[i] = (val > threshold[i]) ? 1 : 0;
+
+    if (s[i]) {
+      active++;
+      posSum += weights[i];
+    }
+  }
+
+  // ================= LINE LOST FIX =================
+  if (active == 0) {
+    // DO NOT STOP suddenly — keep last direction
+    int correction = (lastError > 0) ? 60 : -60;
+
+    setMotor(baseSpeed - correction, baseSpeed + correction);
+    Serial.println("SEARCHING LINE");
+    return;
+  }
+
+  // ================= CENTER STRONG HOLD =================
+  int center = s[3] + s[4] + s[5] + s[6];
+  int sides  = active - center;
+
+  float error = (float)posSum / active;
+
+  // if very centered → go straight
+  if (center >= sides && center > 0) {
+    setMotor(baseSpeed, baseSpeed);
+    Serial.println("STRAIGHT");
+    lastError = 0;
+    return;
+  }
+
+  // ================= PID =================
+  integral += error;
+  float derivative = error - lastError;
+
+  float correction = (Kp * error) + (Ki * integral) + (Kd * derivative);
+
+  lastError = error;
+
+  int leftSpeed  = baseSpeed - correction;
+  int rightSpeed = baseSpeed + correction;
+
+  setMotor(leftSpeed, rightSpeed);
+
+  // ================= DEBUG =================
+  if (error > 2) Serial.println("MORE RIGHT");
+  else if (error > 0.5) Serial.println("SLIGHT RIGHT");
+  else if (error < -2) Serial.println("MORE LEFT");
+  else if (error < -0.5) Serial.println("SLIGHT LEFT");
+  else Serial.println("CENTER");
+
+  delay(10);
+}
