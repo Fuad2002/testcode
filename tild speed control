@@ -1,0 +1,156 @@
+#include <Wire.h>
+
+#define MPU_ADDR 0x68
+
+// -------- MOTOR PINS --------
+#define ENA 5
+#define IN1 6
+#define IN2 7
+
+#define ENB 9
+#define IN3 10
+#define IN4 11
+
+// -------- SPEED --------
+int baseSpeed = 80;
+int maxSpeed  = 210;
+
+float currentSpeed = 75;
+float targetSpeed  = 75;
+
+// -------- ANGLE --------
+float flatAngle = 0;
+float bridgeAngle = 0;
+
+// smoothing
+float smoothedPitch = 0;
+float alpha = 0.08;
+
+// -------- READ ACCEL --------
+void readAccel(int16_t &ax, int16_t &ay, int16_t &az) {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x3B);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU_ADDR, 6, true);
+
+  ax = Wire.read() << 8 | Wire.read();
+  ay = Wire.read() << 8 | Wire.read();
+  az = Wire.read() << 8 | Wire.read();
+}
+
+// -------- GET PITCH --------
+float getPitch() {
+  int16_t ax, ay, az;
+  readAccel(ax, ay, az);
+
+  return atan2((float)ax, sqrt((float)ay * ay + (float)az * az)) * 180 / PI;
+}
+
+// -------- MOTOR --------
+void forward(int speedVal) {
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+
+  analogWrite(ENA, speedVal);
+  analogWrite(ENB, speedVal);
+}
+
+// -------- SETUP --------
+void setup() {
+  Serial.begin(9600);
+  Wire.begin();
+
+  // wake MPU6050
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x6B);
+  Wire.write(0);
+  Wire.endTransmission(true);
+
+  pinMode(ENA, OUTPUT);
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+
+  pinMode(ENB, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+
+  // ===== FLAT CALIBRATION =====
+  Serial.println("KEEP ROBOT FLAT...");
+  delay(3000);
+
+  float sum = 0;
+  for (int i = 0; i < 100; i++) {
+    sum += getPitch();
+    delay(10);
+  }
+  flatAngle = sum / 100;
+
+  Serial.print("Flat Angle: ");
+  Serial.println(flatAngle);
+
+  // ===== BRIDGE CALIBRATION =====
+  Serial.println("TILT ROBOT TO BRIDGE...");
+  delay(4000);
+
+  sum = 0;
+  for (int i = 0; i < 100; i++) {
+    sum += getPitch();
+    delay(10);
+  }
+  bridgeAngle = sum / 100;
+
+  Serial.print("Bridge Angle: ");
+  Serial.println(bridgeAngle);
+
+  Serial.println("STARTING...");
+  delay(2000);
+}
+
+// -------- LOOP --------
+void loop() {
+
+  float pitch = getPitch();
+
+  // -------- ANGLE FILTER --------
+  smoothedPitch = alpha * pitch + (1 - alpha) * smoothedPitch;
+
+  float absPitch  = abs(smoothedPitch);
+  float absFlat   = abs(flatAngle);
+  float absBridge = abs(bridgeAngle);
+
+  // -------- MAP ANGLE → TARGET SPEED --------
+  float ratio = (absPitch - absFlat) / (absBridge - absFlat);
+
+  if (ratio < 0) ratio = 0;
+  if (ratio > 1) ratio = 1;
+
+  targetSpeed = baseSpeed + ratio * (maxSpeed - baseSpeed);
+
+  // -------- ADAPTIVE RAMP (FAST + SMOOTH) --------
+  float diff = targetSpeed - currentSpeed;
+
+  float step = abs(diff) * 0.650;   // responsiveness
+
+  if (step < 1) step = 1;
+  if (step > 10) step = 10;
+
+  if (diff > 0) currentSpeed += step;
+  else if (diff < 0) currentSpeed -= step;
+
+  int finalSpeed = constrain((int)currentSpeed, 0, 255);
+
+  forward(finalSpeed);
+
+  // -------- DEBUG --------
+  Serial.print("Pitch: ");
+  Serial.print(smoothedPitch);
+  Serial.print(" | Target: ");
+  Serial.print(targetSpeed);
+  Serial.print(" | Speed: ");
+  Serial.println(finalSpeed);
+
+  delay(10);
+}
